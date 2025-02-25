@@ -394,6 +394,158 @@ async function run() {
             }
         });
 
+        // app.post('/transactions/cash-out', verifyToken, async (req, res) => {
+        app.post('/transactions/cash-out', verifyToken, async (req, res) => {
+            try {
+                // The user must be 'User' role
+                if (req.user.role !== 'User') {
+                    return res.status(403).json({ success: false, message: 'Only users can cash out.' });
+                }
+
+                const userId = req.user._id; // from JWT
+                const { agentPhone, amount, pin, reference } = req.body;
+                const numericAmount = Number(amount) || 0;
+
+                // 1) Basic checks
+                if (numericAmount <= 0) {
+                    return res.status(400).json({ success: false, message: 'Invalid amount.' });
+                }
+
+                // Calculate 1.5% fee
+                const fee = +(numericAmount * 0.015).toFixed(2);
+
+                // 2) Find user in the 'users' collection
+                const userDoc = await usersColl.findOne({ _id: new ObjectId(userId) });
+                if (!userDoc) {
+                    return res.status(404).json({ success: false, message: 'User not found.' });
+                }
+
+                // Verify pin
+                const pinMatch = await bcrypt.compare(pin, userDoc.pin);
+                if (!pinMatch) {
+                    return res.status(401).json({ success: false, message: 'Invalid PIN.' });
+                }
+
+                // Check user balance
+                if (userDoc.balance < numericAmount + fee) {
+                    return res.status(400).json({ success: false, message: 'Insufficient balance.' });
+                }
+
+                // 3) Find agent by phone in the 'agents' collection
+                const agentDoc = await agentsColl.findOne({ mobileNumber: agentPhone });
+                if (!agentDoc) {
+                    return res.status(404).json({ success: false, message: 'Agent not found.' });
+                }
+                if (!agentDoc.isApproved) {
+                    return res.status(403).json({ success: false, message: 'Agent is not approved.' });
+                }
+                if (agentDoc.isBlocked) {
+                    return res.status(403).json({ success: false, message: 'Agent is blocked.' });
+                }
+
+                // 4) Split the 1.5% fee => 1% to agent, 0.5% to admin
+                const agentIncomePart = +(numericAmount * 0.01).toFixed(2); // 1%
+                const adminIncomePart = +(numericAmount * 0.005).toFixed(2); // 0.5%
+
+                // (Remainder of fee if rounding error)
+                // e.g. fee = 1.85, agentIncomePart=1.00, adminIncomePart=0.5 => total 1.5 => 0.35 difference
+                // For simplicity, we can put that difference to admin or just ignore beyond 2 decimals.
+
+                // 5) Deduct from user
+                const updatedUserBalance = userDoc.balance - (numericAmount + fee);
+
+                // 6) Agent gets the "amount" from user
+                const updatedAgentBalance = agentDoc.balance + numericAmount;
+
+                // Also, agent's "agentIncome" + agentIncomePart
+                const updatedAgentIncome = (agentDoc.agentIncome || 0) + agentIncomePart;
+
+                // 7) Admin gets the 0.5% portion
+                // Find admin doc in "admins" collection (assuming only 1 admin doc)
+                const adminDoc = await adminsColl.findOne({});
+                if (!adminDoc) {
+                    return res.status(500).json({ success: false, message: 'Admin record not found.' });
+                }
+                const updatedAdminIncome = (adminDoc.adminIncome || 0) + adminIncomePart;
+                // Also, totalSystemMoney if you track that
+                const updatedTotalSystemMoney =
+                    (adminDoc.totalSystemMoney || 0) + fee; // total fee goes into system?
+
+                // 8) Perform DB updates (preferably in a DB transaction if your environment supports)
+                // Example:
+                await usersColl.updateOne(
+                    { _id: userDoc._id },
+                    { $set: { balance: updatedUserBalance } }
+                );
+                await agentsColl.updateOne(
+                    { _id: agentDoc._id },
+                    { $set: { balance: updatedAgentBalance, agentIncome: updatedAgentIncome } }
+                );
+                await adminsColl.updateOne(
+                    { _id: adminDoc._id },
+                    {
+                        $set: {
+                            adminIncome: updatedAdminIncome,
+                            totalSystemMoney: updatedTotalSystemMoney,
+                        },
+                    }
+                );
+
+                // 9) Insert transaction record in "transactions"
+                const transactionId = new ObjectId().toString();
+                const txDoc = {
+                    transactionId,
+                    type: "cash-out",
+                    userId: userDoc._id,
+                    userPhone: userDoc.mobileNumber,
+                    agentId: agentDoc._id,
+                    agentPhone,
+                    amount: numericAmount,
+                    fee,
+                    userBalanceAfter: updatedUserBalance,
+                    agentBalanceAfter: updatedAgentBalance,
+                    reference: reference || "",
+                    createdAt: new Date(),
+                };
+                await transactionsColl.insertOne(txDoc);
+
+                // 10) Return success response
+                res.json({
+                    success: true,
+                    message: "Cash-out successful",
+                    transactionId,
+                    userBalance: updatedUserBalance,
+                    agentBalance: updatedAgentBalance,
+                });
+            } catch (error) {
+                console.error("Cash-out error:", error);
+                res.status(500).json({ success: false, message: "Failed to cash out" });
+            }
+        });
+
+        // Example: GET /agents?approved=true
+        app.get('/agents', verifyToken, async (req, res) => {
+            try {
+                const { approved } = req.query;
+                let query = {};
+                if (approved === "true") {
+                    query.isApproved = true;
+                }
+                // Also can ensure isBlocked = false
+                query.isBlocked = false;
+
+                const projection = { name: 1, mobileNumber: 1, agentIncome: 1 };
+                const agents = await agentsColl.find(query).project(projection).toArray();
+
+                return res.json({ success: true, agents });
+            } catch (error) {
+                console.error('GET /agents error:', error);
+                res.status(500).json({ success: false, message: 'Server error' });
+            }
+        });
+
+
+
         /* Additional endpoints for:
            - agent cash-in
            - user cash-out
