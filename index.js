@@ -890,16 +890,14 @@ async function run() {
         app.get("/admin/agent-cash-requests", verifyToken, async (req, res) => {
             try {
                 if (req.user.role !== 'Admin') {
-                    return res.status(403).json({ success: false, message: "Forbidden" });
+                    return res.status(403).json({ success: false, message: 'Forbidden' });
                 }
-                const { status } = req.query; // e.g. 'pending', 'approved', ...
-                let query = {};
-                if (status) {
-                    query.status = status;
-                }
-                // Join with agent info if you want. For now, just return docs:
-                const requests = await agentRequestsColl.find(query).toArray();
 
+                const { status } = req.query; // e.g. "pending"
+                let query = {};
+                if (status) query.status = status;
+
+                const requests = await agentRequestsColl.find(query).toArray();
                 res.json({ success: true, requests });
             } catch (error) {
                 console.error("GET /admin/agent-cash-requests error:", error);
@@ -908,14 +906,14 @@ async function run() {
         });
 
 
+
         app.patch("/admin/agent-cash-requests/:id/approve", verifyToken, async (req, res) => {
             try {
                 if (req.user.role !== 'Admin') {
-                    return res.status(403).json({ success: false, message: "Forbidden" });
+                    return res.status(403).json({ success: false, message: 'Forbidden' });
                 }
-                const requestId = req.params.id;
 
-                // find the request
+                const requestId = req.params.id;
                 const requestDoc = await agentRequestsColl.findOne({ _id: new ObjectId(requestId) });
                 if (!requestDoc) {
                     return res.status(404).json({ success: false, message: "Request not found." });
@@ -924,14 +922,14 @@ async function run() {
                     return res.status(400).json({ success: false, message: "Request already processed." });
                 }
 
-                // fetch the agent
+                // find the agent
                 const agentDoc = await agentsColl.findOne({ _id: requestDoc.agentId });
                 if (!agentDoc) {
                     return res.status(404).json({ success: false, message: "Agent not found." });
                 }
 
                 // add the requested amount to agent's balance
-                const updatedBalance = agentDoc.balance + requestDoc.amount;
+                const updatedBalance = (agentDoc.balance || 0) + requestDoc.amount;
 
                 // update agent doc
                 await agentsColl.updateOne(
@@ -945,21 +943,27 @@ async function run() {
                     { $set: { status: "approved", approvedAt: new Date() } }
                 );
 
-                res.json({ success: true, message: "Agent request approved", newBalance: updatedBalance });
-            } catch (err) {
-                console.error("PATCH /admin/agent-cash-requests/:id/approve error:", err);
+                res.json({
+                    success: true,
+                    message: "Agent request approved",
+                    newBalance: updatedBalance
+                });
+            } catch (error) {
+                console.error("Approve agent request error:", error);
                 res.status(500).json({ success: false, message: "Server error" });
             }
         });
 
 
+
+
         app.patch("/admin/agent-cash-requests/:id/reject", verifyToken, async (req, res) => {
             try {
                 if (req.user.role !== 'Admin') {
-                    return res.status(403).json({ success: false, message: "Forbidden" });
+                    return res.status(403).json({ success: false, message: 'Forbidden' });
                 }
-                const requestId = req.params.id;
 
+                const requestId = req.params.id;
                 const requestDoc = await agentRequestsColl.findOne({ _id: new ObjectId(requestId) });
                 if (!requestDoc) {
                     return res.status(404).json({ success: false, message: "Request not found." });
@@ -974,11 +978,12 @@ async function run() {
                 );
 
                 res.json({ success: true, message: "Agent request rejected." });
-            } catch (err) {
-                console.error("reject agent request error:", err);
+            } catch (error) {
+                console.error("Reject agent request error:", error);
                 res.status(500).json({ success: false, message: "Server error" });
             }
         });
+
 
 
 
