@@ -544,6 +544,251 @@ async function run() {
             }
         });
 
+        // For example, in your server file (e.g. index.js)
+        app.post("/transactions/cash-in", verifyToken, async (req, res) => {
+            try {
+                // Only an agent can do this
+                if (req.user.role !== "Agent") {
+                    return res.status(403).json({
+                        success: false,
+                        message: "Only agent can perform cash-in."
+                    });
+                }
+
+                const agentId = req.user._id; // from JWT
+                const { userPhone, amount, pin, reference } = req.body;
+                const numericAmount = Number(amount) || 0;
+                if (numericAmount <= 0) {
+                    return res.status(400).json({ success: false, message: "Invalid amount." });
+                }
+
+                // 1) Find the agent doc
+                const agentDoc = await agentsColl.findOne({ _id: new ObjectId(agentId) });
+                if (!agentDoc) {
+                    return res.status(404).json({ success: false, message: "Agent not found." });
+                }
+                if (!agentDoc.isApproved) {
+                    return res.status(403).json({ success: false, message: "Agent is not approved." });
+                }
+                if (agentDoc.isBlocked) {
+                    return res.status(403).json({ success: false, message: "Agent is blocked." });
+                }
+
+                // 2) Verify agent's pin
+                const pinMatch = await bcrypt.compare(pin, agentDoc.pin);
+                if (!pinMatch) {
+                    return res.status(401).json({ success: false, message: "Invalid agent PIN." });
+                }
+
+                // 3) Check agent has enough balance to transfer
+                if (agentDoc.balance < numericAmount) {
+                    return res.status(400).json({
+                        success: false,
+                        message: "Agent does not have enough balance for this cash-in."
+                    });
+                }
+
+                // 4) Find the user by phone
+                const userDoc = await usersColl.findOne({ mobileNumber: userPhone });
+                if (!userDoc) {
+                    return res.status(404).json({ success: false, message: "User not found." });
+                }
+                if (userDoc.isBlocked) {
+                    return res.status(403).json({ success: false, message: "User is blocked." });
+                }
+
+                // 5) Adjust balances: No fee => agent -> user
+                const updatedAgentBalance = agentDoc.balance - numericAmount;
+                const updatedUserBalance = (userDoc.balance || 0) + numericAmount;
+
+                // 6) (Optional) If you had previously been adding to totalSystemMoney, remove that,
+                // because we are just transferring existing e-money from agent to user now:
+                // const updatedTotalSystemMoney = adminDoc.totalSystemMoney // stays the same
+
+                // 7) Perform DB updates
+                await agentsColl.updateOne(
+                    { _id: agentDoc._id },
+                    { $set: { balance: updatedAgentBalance } }
+                );
+                await usersColl.updateOne(
+                    { _id: userDoc._id },
+                    { $set: { balance: updatedUserBalance } }
+                );
+
+                // 8) Insert transaction record
+                const transactionId = new ObjectId().toString();
+                const txDoc = {
+                    transactionId,
+                    type: "cash-in",        // or "agent-cash-in"
+                    agentId: agentDoc._id,
+                    agentPhone: agentDoc.mobileNumber,
+                    userId: userDoc._id,
+                    userPhone,
+                    amount: numericAmount,
+                    fee: 0,                 // no fee
+                    reference: reference || "",
+                    agentBalanceAfter: updatedAgentBalance,
+                    userBalanceAfter: updatedUserBalance,
+                    createdAt: new Date(),
+                };
+                await transactionsColl.insertOne(txDoc);
+
+                // 9) Return success
+                res.json({
+                    success: true,
+                    message: "Cash-in successful",
+                    transactionId,
+                    userBalance: updatedUserBalance,
+                    agentBalance: updatedAgentBalance
+                });
+            } catch (err) {
+                console.error("Cash-in error:", err);
+                res.status(500).json({
+                    success: false,
+                    message: "Failed to process cash-in."
+                });
+            }
+        });
+
+
+        // Admin only: get a list of users with optional phoneNumber search
+        app.get('/admin/users', verifyToken, async (req, res) => {
+            try {
+                if (req.user.role !== 'Admin') {
+                    return res.status(403).json({ success: false, message: 'Forbidden' });
+                }
+
+                const { search } = req.query;
+                let query = {};
+
+                if (search) {
+                    // e.g., search by partial phone
+                    // you can do a full or partial match, e.g.:
+                    query.mobileNumber = { $regex: search, $options: 'i' };
+                }
+
+                // fetch from users collection
+                const projection = { pin: 0 }; // exclude pin
+                const userDocs = await usersColl.find(query).project(projection).toArray();
+
+                res.json({ success: true, users: userDocs });
+            } catch (error) {
+                console.error('GET /admin/users error:', error);
+                res.status(500).json({ success: false, message: 'Server error' });
+            }
+        });
+
+        // Admin only: get a list of agents with optional phoneNumber search
+        app.get('/admin/agents', verifyToken, async (req, res) => {
+            try {
+                if (req.user.role !== 'Admin') {
+                    return res.status(403).json({ success: false, message: 'Forbidden' });
+                }
+
+                const { search } = req.query;
+                let query = {};
+                if (search) {
+                    query.mobileNumber = { $regex: search, $options: 'i' };
+                }
+
+                const projection = { pin: 0 }; // exclude pin
+                const agentDocs = await agentsColl.find(query).project(projection).toArray();
+
+                res.json({ success: true, agents: agentDocs });
+            } catch (error) {
+                console.error('GET /admin/agents error:', error);
+                res.status(500).json({ success: false, message: 'Server error' });
+            }
+        });
+
+
+        // Admin blocks/unblocks a user: { isBlocked: true/false }
+        app.patch('/admin/users/:id/block', verifyToken, async (req, res) => {
+            try {
+                if (req.user.role !== 'Admin') {
+                    return res.status(403).json({ success: false, message: 'Forbidden' });
+                }
+                const userId = req.params.id;
+                const { isBlocked } = req.body; // boolean
+
+                const updateResult = await usersColl.updateOne(
+                    { _id: new ObjectId(userId) },
+                    { $set: { isBlocked: !!isBlocked } }
+                );
+
+                if (updateResult.modifiedCount === 1) {
+                    return res.json({ success: true, message: 'User block status updated.' });
+                } else {
+                    return res.status(404).json({ success: false, message: 'User not found.' });
+                }
+            } catch (error) {
+                console.error('PATCH /admin/users/:id/block error:', error);
+                res.status(500).json({ success: false, message: 'Server error' });
+            }
+        });
+
+
+        app.patch('/admin/agents/:id/block', verifyToken, async (req, res) => {
+            try {
+                if (req.user.role !== 'Admin') {
+                    return res.status(403).json({ success: false, message: 'Forbidden' });
+                }
+                const agentId = req.params.id;
+                const { isBlocked } = req.body;
+
+                const updateResult = await agentsColl.updateOne(
+                    { _id: new ObjectId(agentId) },
+                    { $set: { isBlocked: !!isBlocked } }
+                );
+
+                if (updateResult.modifiedCount === 1) {
+                    return res.json({ success: true, message: 'Agent block status updated.' });
+                } else {
+                    return res.status(404).json({ success: false, message: 'Agent not found.' });
+                }
+            } catch (error) {
+                console.error('PATCH /admin/agents/:id/block error:', error);
+                res.status(500).json({ success: false, message: 'Server error' });
+            }
+        });
+
+
+        // Admin can view transactions for a specific user or agent
+        app.get('/transactions', verifyToken, async (req, res) => {
+            try {
+                if (req.user.role !== 'Admin') {
+                    return res.status(403).json({ success: false, message: 'Forbidden' });
+                }
+
+                const { userId, agentId } = req.query;
+                let query = {};
+
+                if (userId) {
+                    // find transactions involving that user
+                    query.$or = [
+                        { userId: new ObjectId(userId) },
+                        { senderId: new ObjectId(userId) },
+                        { recipientId: new ObjectId(userId) }
+                    ];
+                }
+                if (agentId) {
+                    // or involving that agent
+                    query.$or = [
+                        { agentId: new ObjectId(agentId) }
+                    ];
+                }
+
+                const txDocs = await transactionsColl.find(query).sort({ createdAt: -1 }).toArray();
+                res.json({ success: true, transactions: txDocs });
+            } catch (error) {
+                console.error('GET /transactions error:', error);
+                res.status(500).json({ success: false, message: 'Server error' });
+            }
+        });
+
+
+        
+
 
 
         /* Additional endpoints for:
