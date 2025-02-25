@@ -1,7 +1,15 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const jwt = require('jsonwebtoken');
+const bcrypt = require('bcrypt');
 const { MongoClient, ServerApiVersion } = require('mongodb');
+
+/**
+ * Parse SALT_ROUNDS as an integer. If it's not set or invalid,
+ * fallback to 10 (or any default you prefer).
+ */
+const SALT_ROUNDS = parseInt(process.env.SALT_ROUNDS, 10) || 10;
 
 const app = express();
 const port = process.env.PORT || 5000;
@@ -17,7 +25,7 @@ const client = new MongoClient(uri, {
     version: ServerApiVersion.v1,
     strict: true,
     deprecationErrors: true,
-  }
+  },
 });
 
 async function run() {
@@ -38,12 +46,15 @@ async function run() {
         // Check for existing user by email
         const existingUser = await usersCollection.findOne({ email });
         if (existingUser) {
-          return res.json({ success: false, message: "User already exists." });
+          return res.status(400).json({ success: false, message: "User already exists." });
         }
+
+        // Hash the PIN
+        const hashedPin = await bcrypt.hash(pin, SALT_ROUNDS);
 
         const newUser = {
           name,
-          pin, // In production, hash the pin (e.g., bcrypt)
+          pin: hashedPin, // store the hashed pin
           email,
           mobileNumber,
           accountType,
@@ -80,16 +91,29 @@ async function run() {
      */
     app.post('/login', async (req, res) => {
       const { emailOrMobile, pin } = req.body;
+
       try {
-        // Find user by email OR mobile, and match pin
+        // Find user by email OR mobile (NOT by hashed pin)
         const user = await usersCollection.findOne({
-          $or: [{ email: emailOrMobile }, { mobileNumber: emailOrMobile }],
-          pin
+          $or: [
+            { email: emailOrMobile },
+            { mobileNumber: emailOrMobile },
+          ]
         });
 
-        if (user) {
+        // If user not found, return error
+        if (!user) {
+          return res.status(401).json({ success: false, message: 'Invalid credentials (user not found)' });
+        }
+
+        // Compare the provided pin with the hashed pin in DB
+        const isValid = await bcrypt.compare(pin, user.pin);
+
+        if (isValid) {
+          // PIN matches
           return res.status(200).json({ success: true, user });
         } else {
+          // PIN invalid
           return res.status(401).json({ success: false, message: 'Invalid credentials' });
         }
       } catch (error) {
@@ -103,7 +127,7 @@ async function run() {
 
   } catch (err) {
     console.error('DB connection error:', err);
-  } 
+  }
   // finally {
   //   If you want the server to keep running, don't close the connection here.
   //   await client.close();
