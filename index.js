@@ -51,6 +51,7 @@ async function run() {
         const usersColl = db.collection('users');   // for normal users
         const agentsColl = db.collection('agents'); // for agents
         const adminsColl = db.collection('admins'); // for admin(s)
+        const agentRequestsColl = db.collection('agent-cash-request'); // for admin(s)
         const transactionsColl = db.collection('transactions');
 
         /*
@@ -844,6 +845,138 @@ async function run() {
             } catch (err) {
                 console.error('DELETE /admin/agents/:id/reject error:', err);
                 res.status(500).json({ success: false, message: 'Server error' });
+            }
+        });
+
+
+        // Agents can request a top-up from admin
+        app.post("/agents/cash-request", verifyToken, async (req, res) => {
+            try {
+                // Only agent can do it
+                if (req.user.role !== 'Agent') {
+                    return res.status(403).json({ success: false, message: "Only agent can request a cash top-up." });
+                }
+                const agentId = req.user._id;
+                const { amount, reason } = req.body;
+
+                // Validate amount
+                if (!amount || Number(amount) <= 0) {
+                    return res.status(400).json({ success: false, message: "Invalid amount." });
+                }
+
+                // Create a request doc
+                const newRequest = {
+                    agentId: new ObjectId(agentId),
+                    amount: Number(amount),
+                    reason: reason || "",
+                    status: "pending", // 'pending', 'approved', 'rejected'
+                    createdAt: new Date()
+                };
+
+                const result = await agentRequestsColl.insertOne(newRequest);
+                if (!result.acknowledged) {
+                    return res.status(500).json({ success: false, message: "Failed to create request." });
+                }
+
+                res.json({ success: true, message: "Cash request submitted." });
+            } catch (err) {
+                console.error("POST /agents/cash-request error:", err);
+                res.status(500).json({ success: false, message: "Server error" });
+            }
+        });
+
+
+        // Admin fetches requests
+        app.get("/admin/agent-cash-requests", verifyToken, async (req, res) => {
+            try {
+                if (req.user.role !== 'Admin') {
+                    return res.status(403).json({ success: false, message: "Forbidden" });
+                }
+                const { status } = req.query; // e.g. 'pending', 'approved', ...
+                let query = {};
+                if (status) {
+                    query.status = status;
+                }
+                // Join with agent info if you want. For now, just return docs:
+                const requests = await agentRequestsColl.find(query).toArray();
+
+                res.json({ success: true, requests });
+            } catch (error) {
+                console.error("GET /admin/agent-cash-requests error:", error);
+                res.status(500).json({ success: false, message: "Server error" });
+            }
+        });
+
+
+        app.patch("/admin/agent-cash-requests/:id/approve", verifyToken, async (req, res) => {
+            try {
+                if (req.user.role !== 'Admin') {
+                    return res.status(403).json({ success: false, message: "Forbidden" });
+                }
+                const requestId = req.params.id;
+
+                // find the request
+                const requestDoc = await agentRequestsColl.findOne({ _id: new ObjectId(requestId) });
+                if (!requestDoc) {
+                    return res.status(404).json({ success: false, message: "Request not found." });
+                }
+                if (requestDoc.status !== "pending") {
+                    return res.status(400).json({ success: false, message: "Request already processed." });
+                }
+
+                // fetch the agent
+                const agentDoc = await agentsColl.findOne({ _id: requestDoc.agentId });
+                if (!agentDoc) {
+                    return res.status(404).json({ success: false, message: "Agent not found." });
+                }
+
+                // add the requested amount to agent's balance
+                const updatedBalance = agentDoc.balance + requestDoc.amount;
+
+                // update agent doc
+                await agentsColl.updateOne(
+                    { _id: agentDoc._id },
+                    { $set: { balance: updatedBalance } }
+                );
+
+                // mark request as approved
+                await agentRequestsColl.updateOne(
+                    { _id: requestDoc._id },
+                    { $set: { status: "approved", approvedAt: new Date() } }
+                );
+
+                res.json({ success: true, message: "Agent request approved", newBalance: updatedBalance });
+            } catch (err) {
+                console.error("PATCH /admin/agent-cash-requests/:id/approve error:", err);
+                res.status(500).json({ success: false, message: "Server error" });
+            }
+        });
+
+
+        app.patch("/admin/agent-cash-requests/:id/reject", verifyToken, async (req, res) => {
+            try {
+                if (req.user.role !== 'Admin') {
+                    return res.status(403).json({ success: false, message: "Forbidden" });
+                }
+                const requestId = req.params.id;
+
+                const requestDoc = await agentRequestsColl.findOne({ _id: new ObjectId(requestId) });
+                if (!requestDoc) {
+                    return res.status(404).json({ success: false, message: "Request not found." });
+                }
+                if (requestDoc.status !== "pending") {
+                    return res.status(400).json({ success: false, message: "Request already processed." });
+                }
+
+                await agentRequestsColl.updateOne(
+                    { _id: requestDoc._id },
+                    { $set: { status: "rejected", rejectedAt: new Date() } }
+                );
+
+                res.json({ success: true, message: "Agent request rejected." });
+            } catch (err) {
+                console.error("reject agent request error:", err);
+                res.status(500).json({ success: false, message: "Server error" });
             }
         });
 
