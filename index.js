@@ -787,7 +787,65 @@ async function run() {
         });
 
 
-        
+        // admin only: list all unapproved agents
+        app.get('/admin/agent-approvals', verifyToken, async (req, res) => {
+            try {
+                if (req.user.role !== 'Admin') {
+                    return res.status(403).json({ success: false, message: 'Forbidden' });
+                }
+
+                // find agents with isApproved = false
+                const unapprovedAgents = await agentsColl.find({ isApproved: false }).toArray();
+                return res.json({ success: true, agents: unapprovedAgents });
+            } catch (err) {
+                console.error('GET /admin/agent-approvals error:', err);
+                return res.status(500).json({ success: false, message: 'Server error' });
+            }
+        });
+
+
+        app.patch('/admin/agents/:id/approve', verifyToken, async (req, res) => {
+            try {
+                if (req.user.role !== 'Admin') {
+                    return res.status(403).json({ success: false, message: 'Forbidden' });
+                }
+                const agentId = req.params.id;
+
+                const updateRes = await agentsColl.updateOne(
+                    { _id: new ObjectId(agentId) },
+                    { $set: { isApproved: true } }
+                );
+
+                if (updateRes.modifiedCount === 1) {
+                    res.json({ success: true, message: 'Agent approved.' });
+                } else {
+                    res.status(404).json({ success: false, message: 'Agent not found or already approved.' });
+                }
+            } catch (err) {
+                console.error('PATCH /admin/agents/:id/approve error:', err);
+                res.status(500).json({ success: false, message: 'Server error' });
+            }
+        });
+
+
+        app.delete('/admin/agents/:id/reject', verifyToken, async (req, res) => {
+            try {
+                if (req.user.role !== 'Admin') {
+                    return res.status(403).json({ success: false, message: 'Forbidden' });
+                }
+                const agentId = req.params.id;
+
+                const delRes = await agentsColl.deleteOne({ _id: new ObjectId(agentId), isApproved: false });
+                if (delRes.deletedCount === 1) {
+                    res.json({ success: true, message: 'Agent rejected and removed.' });
+                } else {
+                    res.status(404).json({ success: false, message: 'Agent not found or already approved.' });
+                }
+            } catch (err) {
+                console.error('DELETE /admin/agents/:id/reject error:', err);
+                res.status(500).json({ success: false, message: 'Server error' });
+            }
+        });
 
 
 
