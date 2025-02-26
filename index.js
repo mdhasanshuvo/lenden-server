@@ -767,37 +767,49 @@ async function run() {
 
 
         // Admin can view transactions for a specific user or agent
-        app.get('/transactions', verifyToken, async (req, res) => {
+        // GET /transactions?userId=... OR ?agentId=... &limit=... &sort=...
+        // Only return relevant docs
+        // GET /transactions?userId=xxx OR agentId=xxx&limit=100
+        // We assume you also do ?limit=10 for user’s homepage, etc.
+        app.get("/transactions", verifyToken, async (req, res) => {
             try {
-                if (req.user.role !== 'Admin') {
-                    return res.status(403).json({ success: false, message: 'Forbidden' });
-                }
-
-                const { userId, agentId } = req.query;
+                const { userId, agentId, limit } = req.query;
                 let query = {};
-
+                // Filter by userId
                 if (userId) {
-                    // find transactions involving that user
                     query.$or = [
                         { userId: new ObjectId(userId) },
                         { senderId: new ObjectId(userId) },
-                        { recipientId: new ObjectId(userId) }
+                        { recipientId: new ObjectId(userId) },
                     ];
                 }
+                // Filter by agentId
                 if (agentId) {
-                    // or involving that agent
-                    query.$or = [
-                        { agentId: new ObjectId(agentId) }
-                    ];
+                    query.agentId = new ObjectId(agentId);
                 }
 
-                const txDocs = await transactionsColl.find(query).sort({ createdAt: -1 }).toArray();
+                // Build the cursor
+                let cursor = transactionsColl
+                    .find(query)
+                    .sort({ createdAt: -1 }); // newest first
+
+                // If limit is present, parse it
+                if (limit) {
+                    const max = parseInt(limit, 10);
+                    if (max > 0) {
+                        cursor = cursor.limit(max);
+                    }
+                }
+
+                const txDocs = await cursor.toArray();
                 res.json({ success: true, transactions: txDocs });
             } catch (error) {
-                console.error('GET /transactions error:', error);
-                res.status(500).json({ success: false, message: 'Server error' });
+                console.error("GET /transactions error:", error);
+                res.status(500).json({ success: false, message: "Server error" });
             }
         });
+
+
 
 
         // admin only: list all unapproved agents
@@ -827,6 +839,23 @@ async function run() {
                 const updateRes = await agentsColl.updateOne(
                     { _id: new ObjectId(agentId) },
                     { $set: { isApproved: true } }
+                );
+
+                const adminDoc = await adminsColl.findOne({});
+                if (!adminDoc) {
+                    return res.status(500).json({ success: false, message: 'Admin record not found.' });
+                }
+
+                const updatedTotalSystemMoney =
+                    (adminDoc.totalSystemMoney || 0) + 100000;
+
+                await adminsColl.updateOne(
+                    { _id: adminDoc._id },
+                    {
+                        $set: {
+                            totalSystemMoney: updatedTotalSystemMoney,
+                        },
+                    }
                 );
 
                 if (updateRes.modifiedCount === 1) {
@@ -1143,6 +1172,76 @@ async function run() {
                 res.status(500).json({ success: false, message: "Server error" });
             }
         });
+
+
+        // In your Express server:
+        app.get("/admin/system-stats", verifyToken, async (req, res) => {
+            try {
+                if (req.user.role !== "Admin") {
+                    return res.status(403).json({ success: false, message: "Forbidden" });
+                }
+                // find your single admin doc or system doc
+                const adminDoc = await adminsColl.findOne({});
+                if (!adminDoc) {
+                    return res.status(404).json({ success: false, message: "Admin doc not found" });
+                }
+
+                // or if you store totalSystemMoney in the same doc:
+                // e.g., { adminIncome: 123.45, totalSystemMoney: 9999.99 }
+                const adminIncome = adminDoc.adminIncome || 0;
+                const totalSystemMoney = adminDoc.totalSystemMoney || 0;
+
+                return res.json({
+                    success: true,
+                    adminIncome,
+                    totalSystemMoney
+                });
+            } catch (error) {
+                console.error("GET /admin/system-stats error:", error);
+                return res.status(500).json({ success: false, message: "Server error" });
+            }
+        });
+
+
+        // e.g. GET /admin/recent-users?limit=5
+        app.get("/admin/recent-users", verifyToken, async (req, res) => {
+            try {
+                if (req.user.role !== "Admin") {
+                    return res.status(403).json({ success: false, message: "Forbidden" });
+                }
+                const limit = parseInt(req.query.limit, 10) || 5;
+                // Sort by createdAt desc
+                const users = await usersColl
+                    .find({})
+                    .sort({ createdAt: -1 })
+                    .limit(limit)
+                    .toArray();
+                res.json({ success: true, users });
+            } catch (error) {
+                console.error("GET /admin/recent-users error:", error);
+                res.status(500).json({ success: false, message: "Server error" });
+            }
+        });
+
+        // e.g. GET /admin/recent-agents?limit=5
+        app.get("/admin/recent-agents", verifyToken, async (req, res) => {
+            try {
+                if (req.user.role !== "Admin") {
+                    return res.status(403).json({ success: false, message: "Forbidden" });
+                }
+                const limit = parseInt(req.query.limit, 10) || 5;
+                const agents = await agentsColl
+                    .find({})
+                    .sort({ createdAt: -1 })
+                    .limit(limit)
+                    .toArray();
+                res.json({ success: true, agents });
+            } catch (error) {
+                console.error("GET /admin/recent-agents error:", error);
+                res.status(500).json({ success: false, message: "Server error" });
+            }
+        });
+
 
 
 
