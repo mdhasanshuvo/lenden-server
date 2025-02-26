@@ -52,6 +52,7 @@ async function run() {
         const agentsColl = db.collection('agents'); // for agents
         const adminsColl = db.collection('admins'); // for admin(s)
         const agentRequestsColl = db.collection('agent-cash-request'); // for admin(s)
+        const agentWithdrawRequestsColl = db.collection('agent-withdraw-request');
         const transactionsColl = db.collection('transactions');
 
         /*
@@ -68,6 +69,10 @@ async function run() {
                 const phoneExists = await usersColl.findOne({ mobileNumber });
                 if (phoneExists) {
                     return res.status(400).json({ success: false, message: 'Mobile number already in use.' });
+                }
+                const nidExists = await usersColl.findOne({ nid });
+                if (nidExists) {
+                    return res.status(400).json({ success: false, message: 'Nid already in use.' });
                 }
 
                 // Hash pin
@@ -110,6 +115,10 @@ async function run() {
                 const phoneExists = await agentsColl.findOne({ mobileNumber });
                 if (phoneExists) {
                     return res.status(400).json({ success: false, message: 'Mobile number already in use.' });
+                }
+                const nidExists = await agentsColl.findOne({ nid });
+                if (nidExists) {
+                    return res.status(400).json({ success: false, message: 'Nid already in use.' });
                 }
 
                 // Hash pin
@@ -262,12 +271,15 @@ async function run() {
             try {
                 const { accountType } = req.query;
 
+                let query = {};
+                query.isBlocked = false;
+
                 // If using separate collections:
                 // We only query the usersColl for "User" accounts
                 if (accountType === 'User') {
                     // Project only name, mobileNumber (or add more fields as needed)
                     const projection = { name: 1, mobileNumber: 1 };
-                    const users = await usersColl.find({}).project(projection).toArray();
+                    const users = await usersColl.find(query).project(projection).toArray();
 
                     return res.json({ success: true, users });
                 }
@@ -984,6 +996,153 @@ async function run() {
             }
         });
 
+
+        app.post("/agents/withdraw-request", verifyToken, async (req, res) => {
+            try {
+                // Ensure user.role === 'Agent'
+                if (req.user.role !== 'Agent') {
+                    return res.status(403).json({ success: false, message: "Only agents can request withdrawal." });
+                }
+
+                const agentId = req.user._id;
+                const { amount, reason } = req.body;
+                const numericAmount = Number(amount) || 0;
+                if (numericAmount <= 0) {
+                    return res.status(400).json({ success: false, message: "Invalid amount." });
+                }
+
+                // 1) find agent doc, ensure agentIncome >= amount
+                const agentDoc = await agentsColl.findOne({ _id: new ObjectId(agentId) });
+                if (!agentDoc) {
+                    return res.status(404).json({ success: false, message: "Agent not found." });
+                }
+                // Optionally check: if (agentDoc.agentIncome < numericAmount) => throw error
+                if ((agentDoc.agentIncome || 0) < numericAmount) {
+                    return res.status(400).json({
+                        success: false,
+                        message: "Cannot request more than your current agent income."
+                    });
+                }
+
+                // 2) create a request doc
+                const newRequest = {
+                    agentId: agentDoc._id,
+                    amount: numericAmount,
+                    reason: reason || "",
+                    status: "pending",
+                    type: "withdraw",
+                    createdAt: new Date()
+                };
+
+                const result = await agentWithdrawRequestsColl.insertOne(newRequest);
+                if (!result.acknowledged) {
+                    return res.status(500).json({ success: false, message: "Failed to create request." });
+                }
+
+                res.json({ success: true, message: "Withdrawal request submitted." });
+            } catch (error) {
+                console.error("POST /agents/withdraw-request error:", error);
+                res.status(500).json({ success: false, message: "Server error" });
+            }
+        });
+
+
+        app.get("/admin/agent-withdraw-requests", verifyToken, async (req, res) => {
+            try {
+                if (req.user.role !== 'Admin') {
+                    return res.status(403).json({ success: false, message: "Forbidden" });
+                }
+                const { status } = req.query; // e.g. "pending"
+                let query = { type: "withdraw" };
+                if (status) {
+                    query.status = status;
+                }
+
+                const docs = await agentWithdrawRequestsColl.find(query).toArray();
+                res.json({ success: true, requests: docs });
+            } catch (error) {
+                console.error("GET /admin/agent-withdraw-requests error:", error);
+                res.status(500).json({ success: false, message: "Server error" });
+            }
+        });
+
+
+        app.patch("/admin/agent-withdraw-requests/:id/approve", verifyToken, async (req, res) => {
+            try {
+                if (req.user.role !== 'Admin') {
+                    return res.status(403).json({ success: false, message: "Forbidden" });
+                }
+
+                const requestId = req.params.id;
+                const requestDoc = await agentWithdrawRequestsColl.findOne({ _id: new ObjectId(requestId) });
+                if (!requestDoc) {
+                    return res.status(404).json({ success: false, message: "Withdraw request not found." });
+                }
+                if (requestDoc.status !== "pending") {
+                    return res.status(400).json({ success: false, message: "Request already processed." });
+                }
+
+                // find agent
+                const agentDoc = await agentsColl.findOne({ _id: requestDoc.agentId });
+                if (!agentDoc) {
+                    return res.status(404).json({ success: false, message: "Agent not found." });
+                }
+
+                // check agentIncome >= requestDoc.amount
+                if ((agentDoc.agentIncome || 0) < requestDoc.amount) {
+                    return res.status(400).json({ success: false, message: "Agent income insufficient." });
+                }
+
+                // subtract from agentIncome
+                const updatedIncome = agentDoc.agentIncome - requestDoc.amount;
+
+                // update agent doc
+                await agentsColl.updateOne(
+                    { _id: agentDoc._id },
+                    { $set: { agentIncome: updatedIncome } }
+                );
+
+                // mark request as approved
+                await agentWithdrawRequestsColl.updateOne(
+                    { _id: requestDoc._id },
+                    { $set: { status: "approved", approvedAt: new Date() } }
+                );
+
+                res.json({ success: true, message: "Agent withdraw request approved", newAgentIncome: updatedIncome });
+            } catch (error) {
+                console.error("Approve withdraw error:", error);
+                res.status(500).json({ success: false, message: "Server error" });
+            }
+        });
+
+
+        app.patch("/admin/agent-withdraw-requests/:id/reject", verifyToken, async (req, res) => {
+            try {
+                if (req.user.role !== 'Admin') {
+                    return res.status(403).json({ success: false, message: "Forbidden" });
+                }
+
+                const requestId = req.params.id;
+                const requestDoc = await agentWithdrawRequestsColl.findOne({ _id: new ObjectId(requestId) });
+                if (!requestDoc) {
+                    return res.status(404).json({ success: false, message: "Withdraw request not found." });
+                }
+                if (requestDoc.status !== "pending") {
+                    return res.status(400).json({ success: false, message: "Request already processed." });
+                }
+
+                // set status = rejected
+                await agentWithdrawRequestsColl.updateOne(
+                    { _id: requestDoc._id },
+                    { $set: { status: "rejected", rejectedAt: new Date() } }
+                );
+
+                res.json({ success: true, message: "Agent withdraw request rejected" });
+            } catch (error) {
+                console.error("Reject withdraw error:", error);
+                res.status(500).json({ success: false, message: "Server error" });
+            }
+        });
 
 
 
