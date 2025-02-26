@@ -92,6 +92,24 @@ async function run() {
                 if (!result.acknowledged) {
                     return res.status(500).json({ success: false, message: 'Failed to create user.' });
                 }
+
+                const adminDoc = await adminsColl.findOne({});
+                if (!adminDoc) {
+                    return res.status(500).json({ success: false, message: 'Admin record not found.' });
+                }
+
+                const updatedTotalSystemMoney =
+                    (adminDoc.totalSystemMoney || 0) + 40;
+
+                await adminsColl.updateOne(
+                    { _id: adminDoc._id },
+                    {
+                        $set: {
+                            totalSystemMoney: updatedTotalSystemMoney,
+                        },
+                    }
+                );
+
                 // Return user without the pin field
                 const { pin: removed, ...rest } = newUser;
                 return res.status(201).json({ success: true, user: { ...rest, _id: result.insertedId } });
@@ -359,9 +377,9 @@ async function run() {
                 if (!adminDoc) {
                     return res.status(500).json({ success: false, message: 'Admin record not found.' });
                 }
-                const updatedAdminBal = (adminDoc.adminIncome || 0) + fee;
+                const updatedAdminBal = (adminDoc.adminIncome || 0) + fee + 5;
                 // Also track totalSystemMoney if needed
-                const updatedTotalSystemMoney = (adminDoc.totalSystemMoney || 0) + fee; // or more complex logic
+                const updatedTotalSystemMoney = (adminDoc.totalSystemMoney || 0) + fee + 5; // or more complex logic
 
                 // 8) Perform DB updates
                 await usersColl.updateOne(
@@ -392,6 +410,7 @@ async function run() {
                     createdAt: new Date(),
                 };
                 await transactionsColl.insertOne(txDoc);
+
 
                 // 10) Return success
                 res.json({
@@ -479,10 +498,10 @@ async function run() {
                 if (!adminDoc) {
                     return res.status(500).json({ success: false, message: 'Admin record not found.' });
                 }
-                const updatedAdminIncome = (adminDoc.adminIncome || 0) + adminIncomePart;
+                const updatedAdminIncome = (adminDoc.adminIncome || 0) + adminIncomePart + 5;
                 // Also, totalSystemMoney if you track that
                 const updatedTotalSystemMoney =
-                    (adminDoc.totalSystemMoney || 0) + fee; // total fee goes into system?
+                    (adminDoc.totalSystemMoney || 0) + fee + 5; // total fee goes into system?
 
                 // 8) Perform DB updates (preferably in a DB transaction if your environment supports)
                 // Example:
@@ -626,6 +645,26 @@ async function run() {
                 await usersColl.updateOne(
                     { _id: userDoc._id },
                     { $set: { balance: updatedUserBalance } }
+                );
+
+                // Find admin doc in "admins" collection (assuming only 1 admin doc)
+                const adminDoc = await adminsColl.findOne({});
+                if (!adminDoc) {
+                    return res.status(500).json({ success: false, message: 'Admin record not found.' });
+                }
+                const updatedAdminIncome = (adminDoc.adminIncome || 0) + 5;
+                // Also, totalSystemMoney if you track that
+                const updatedTotalSystemMoney =
+                    (adminDoc.totalSystemMoney || 0) + 5; // total fee goes into system?
+
+                await adminsColl.updateOne(
+                    { _id: adminDoc._id },
+                    {
+                        $set: {
+                            adminIncome: updatedAdminIncome,
+                            totalSystemMoney: updatedTotalSystemMoney,
+                        },
+                    }
                 );
 
                 // 8) Insert transaction record
@@ -984,6 +1023,27 @@ async function run() {
                     { $set: { status: "approved", approvedAt: new Date() } }
                 );
 
+                const adminDoc = await adminsColl.findOne({});
+                if (!adminDoc) {
+                    return res.status(500).json({ success: false, message: 'Admin record not found.' });
+                }
+
+                const updatedTotalSystemMoney =
+                    (adminDoc.totalSystemMoney || 0) + 100000 + 5;
+
+                const updatedAdminIncome = (adminDoc.adminIncome || 0) + 5;
+
+
+                await adminsColl.updateOne(
+                    { _id: adminDoc._id },
+                    {
+                        $set: {
+                            adminIncome: updatedAdminIncome,
+                            totalSystemMoney: updatedTotalSystemMoney,
+                        },
+                    }
+                );
+
                 res.json({
                     success: true,
                     message: "Agent request approved",
@@ -1101,6 +1161,29 @@ async function run() {
                 if (req.user.role !== 'Admin') {
                     return res.status(403).json({ success: false, message: "Forbidden" });
                 }
+
+                const { amount } = req.body;
+
+                const adminDoc = await adminsColl.findOne({});
+                if (!adminDoc) {
+                    return res.status(500).json({ success: false, message: 'Admin record not found.' });
+                }
+
+                const updatedTotalSystemMoney =
+                    (adminDoc.totalSystemMoney - amount) + 5;
+
+                const updatedAdminIncome = (adminDoc.adminIncome || 0) + 5;
+
+                await adminsColl.updateOne(
+                    { _id: adminDoc._id },
+                    {
+                        $set: {
+                            adminIncome: updatedAdminIncome,
+                            totalSystemMoney: updatedTotalSystemMoney,
+                        },
+                    }
+                );
+
 
                 const requestId = req.params.id;
                 const requestDoc = await agentWithdrawRequestsColl.findOne({ _id: new ObjectId(requestId) });
