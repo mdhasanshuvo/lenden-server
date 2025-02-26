@@ -54,6 +54,7 @@ async function run() {
         const agentRequestsColl = db.collection('agent-cash-request'); // for admin(s)
         const agentWithdrawRequestsColl = db.collection('agent-withdraw-request');
         const transactionsColl = db.collection('transactions');
+        const activeUsersColl = db.collection('active-users');
 
         /*
          * ============ USER REGISTRATION ============
@@ -206,7 +207,6 @@ async function run() {
                 // Compare pin
                 const pinMatch = await bcrypt.compare(pin, foundUser.pin);
                 if (!pinMatch) {
-                    console.log(foundUser.pin)
                     return res.status(401).json({ success: false, message: 'Invalid credentials (wrong PIN)' });
                 }
 
@@ -219,6 +219,25 @@ async function run() {
                     return res.status(403).json({ success: false, message: 'Account is blocked.' });
                 }
 
+                // *** Enforce single-device login for Users and Agents (optionally Admin) ***
+                if (role === 'User' || role === 'Agent') {
+                    // Check if there's already an active session for this user
+                    const existingSession = await activeUsersColl.findOne({ userId: foundUser._id });
+                    if (existingSession) {
+                        // We refuse the new login
+                        return res.status(403).json({
+                            success: false,
+                            message: 'You are already logged in on another device. Please logout first.',
+                        });
+                    }
+
+                    // Otherwise, create a record in active-users
+                    await activeUsersColl.insertOne({
+                        userId: foundUser._id,
+                        role,
+                        createdAt: new Date(),
+                    });
+                }
                 // Build JWT
                 const payload = {
                     _id: foundUser._id,
@@ -248,14 +267,27 @@ async function run() {
                     });
             } catch (err) {
                 console.error('Login error:', err);
-                console.log(emailOrMobile);
                 res.status(500).json({ success: false, message: 'Server error.' });
             }
         });
 
+
         /*
          * ============ LOGOUT ============
          */
+        app.post('/logout', verifyToken, async (req, res) => {
+            try {
+                // Identify the user from req.user._id
+                // Remove them from active-users if they exist
+                await activeUsersColl.deleteOne({ userId: new ObjectId(req.user._id) });
+
+                // Clear the cookie
+                res.clearCookie('token').json({ success: true, message: 'Logged out successfully' });
+            } catch (error) {
+                console.error('Logout error:', error);
+                res.status(500).json({ success: false, message: 'Server error' });
+            }
+        });
         app.post('/logout', (req, res) => {
             res.clearCookie('token').json({ success: true, message: 'Logged out.' });
         });
