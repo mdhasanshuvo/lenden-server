@@ -44,7 +44,7 @@ const client = new MongoClient(uri, {
 
 async function run() {
     try {
-        await client.connect();
+        // await client.connect();
         console.log('Connected to MongoDB!');
 
         const db = client.db('lendenDB');
@@ -288,9 +288,6 @@ async function run() {
                 res.status(500).json({ success: false, message: 'Server error' });
             }
         });
-        app.post('/logout', (req, res) => {
-            res.clearCookie('token').json({ success: true, message: 'Logged out.' });
-        });
 
         /*
          * ============ GET PROFILE (User / Agent / Admin) ============
@@ -317,6 +314,7 @@ async function run() {
 
         // Example: GET /users?accountType=User
         // Protected by verifyToken middleware
+        // undone--
         app.get('/users', verifyToken, async (req, res) => {
             try {
                 const { accountType } = req.query;
@@ -351,6 +349,7 @@ async function run() {
          * ============ SEND MONEY: USER => USER ============
          * (Adjust logic for your fee rules, admin earning, etc.)
          */
+        // undone--
         app.post('/transactions/send-money', verifyToken, async (req, res) => {
             // Only a "User" can send money to another user?
             const { role, _id: senderId } = req.user;
@@ -588,6 +587,7 @@ async function run() {
         });
 
         // Example: GET /agents?approved=true
+        // undone--
         app.get('/agents', verifyToken, async (req, res) => {
             try {
                 const { approved } = req.query;
@@ -609,6 +609,7 @@ async function run() {
         });
 
         // For example, in your server file (e.g. index.js)
+        // undone--
         app.post("/transactions/cash-in", verifyToken, async (req, res) => {
             try {
                 // Only an agent can do this
@@ -736,6 +737,7 @@ async function run() {
 
 
         // Admin only: get a list of users with optional phoneNumber search
+        // undone--
         app.get('/admin/users', verifyToken, async (req, res) => {
             try {
                 if (req.user.role !== 'Admin') {
@@ -763,6 +765,7 @@ async function run() {
         });
 
         // Admin only: get a list of agents with optional phoneNumber search
+        // undone--
         app.get('/admin/agents', verifyToken, async (req, res) => {
             try {
                 if (req.user.role !== 'Admin') {
@@ -787,6 +790,7 @@ async function run() {
 
 
         // Admin blocks/unblocks a user: { isBlocked: true/false }
+        // undone--
         app.patch('/admin/users/:id/block', verifyToken, async (req, res) => {
             try {
                 if (req.user.role !== 'Admin') {
@@ -884,6 +888,7 @@ async function run() {
 
 
         // admin only: list all unapproved agents
+        // undone--
         app.get('/admin/agent-approvals', verifyToken, async (req, res) => {
             try {
                 if (req.user.role !== 'Admin') {
@@ -899,7 +904,7 @@ async function run() {
             }
         });
 
-
+        // undone--
         app.patch('/admin/agents/:id/approve', verifyToken, async (req, res) => {
             try {
                 if (req.user.role !== 'Admin') {
@@ -940,7 +945,7 @@ async function run() {
             }
         });
 
-
+        // undone--
         app.delete('/admin/agents/:id/reject', verifyToken, async (req, res) => {
             try {
                 if (req.user.role !== 'Admin') {
@@ -1089,7 +1094,7 @@ async function run() {
 
 
 
-
+        // undone--
         app.patch("/admin/agent-cash-requests/:id/reject", verifyToken, async (req, res) => {
             try {
                 if (req.user.role !== 'Admin') {
@@ -1167,7 +1172,7 @@ async function run() {
             }
         });
 
-
+        // undone--
         app.get("/admin/agent-withdraw-requests", verifyToken, async (req, res) => {
             try {
                 if (req.user.role !== 'Admin') {
