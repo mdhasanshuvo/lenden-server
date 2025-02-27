@@ -12,7 +12,7 @@ const app = express();
 const port = process.env.PORT || 5000;
 
 app.use(cors({
-    origin: ['http://localhost:5173'],
+    origin: ['http://localhost:5173','https://lenden-mfs.netlify.app','https://lenden-auth.web.app'],
     credentials: true,
 }));
 app.use(express.json());
@@ -249,8 +249,8 @@ async function run() {
                 res
                     .cookie('token', token, {
                         httpOnly: true,
-                        secure: false,
-                        sameSite: 'strict',
+                        secure: true,
+                        sameSite: 'none',
                         maxAge: 5 * 60 * 60 * 1000,
                     })
                     .json({
