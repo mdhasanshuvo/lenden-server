@@ -12,7 +12,7 @@ const app = express();
 const port = process.env.PORT || 5000;
 
 app.use(cors({
-    origin: ['http://localhost:5173','https://lenden-mfs.netlify.app','https://lenden-auth.web.app'],
+    origin: ['http://localhost:5173', 'https://lenden-mfs.netlify.app', 'https://lenden-auth.web.app'],
     credentials: true,
 }));
 app.use(express.json());
@@ -173,15 +173,13 @@ async function run() {
         app.post('/login', async (req, res) => {
             const { emailOrMobile, pin } = req.body;
             try {
-                // Attempt user collection first
                 let foundUser = await usersColl.findOne({
                     $or: [{ email: emailOrMobile }, { mobileNumber: emailOrMobile }],
                 });
                 let role = 'User';
                 let coll = usersColl;
-
+        
                 if (!foundUser) {
-                    // If not found in users, check agents
                     foundUser = await agentsColl.findOne({
                         $or: [{ email: emailOrMobile }, { mobileNumber: emailOrMobile }],
                     });
@@ -189,7 +187,6 @@ async function run() {
                         role = 'Agent';
                         coll = agentsColl;
                     } else {
-                        // If not found in agents, check admin
                         foundUser = await adminsColl.findOne({
                             $or: [{ email: emailOrMobile }, { mobileNumber: emailOrMobile }],
                         });
@@ -199,60 +196,69 @@ async function run() {
                         }
                     }
                 }
-
+        
                 if (!foundUser) {
                     return res.status(401).json({ success: false, message: 'Invalid credentials (not found)' });
                 }
-
-                // Compare pin
+        
                 const pinMatch = await bcrypt.compare(pin, foundUser.pin);
                 if (!pinMatch) {
                     return res.status(401).json({ success: false, message: 'Invalid credentials (wrong PIN)' });
                 }
-
-                // If agent is not approved
+        
                 if (role === 'Agent' && foundUser.isApproved === false) {
                     return res.status(403).json({ success: false, message: 'Agent not approved by admin yet.' });
                 }
-                // If blocked
                 if (foundUser.isBlocked) {
                     return res.status(403).json({ success: false, message: 'Account is blocked.' });
                 }
-
-                // *** Enforce single-device login for Users and Agents (optionally Admin) ***
-                if (role === 'User' || role === 'Agent') {
-                    // Check if there's already an active session for this user
-                    const existingSession = await activeUsersColl.findOne({ userId: foundUser._id });
-                    if (existingSession) {
-                        // We refuse the new login
-                        return res.status(403).json({
-                            success: false,
-                            message: 'You are already logged in on another device. Please logout first.',
-                        });
-                    }
-
-                    // Otherwise, create a record in active-users
-                    await activeUsersColl.insertOne({
-                        userId: foundUser._id,
-                        role,
-                        createdAt: new Date(),
-                    });
-                }
-                // Build JWT
+        
+                // Create JWT Token
                 const payload = {
                     _id: foundUser._id,
-                    role, // "User", "Agent", or "Admin"
+                    role,
                 };
-
-                const token = jwt.sign(payload, process.env.ACCESS_TOKEN_SECRET, { expiresIn: '5h' });
-                // Send httpOnly cookie
+                const token = jwt.sign(payload, process.env.ACCESS_TOKEN_SECRET, { expiresIn: '24h' });
+        
+                if (role === 'User' || role === 'Agent') {
+                    const existingSession = await activeUsersColl.findOne({ userId: foundUser._id });
+        
+                    if (existingSession) {
+                        // 🛑 Here, check if token in cookie matches token in database
+                        const clientToken = req.cookies.token; // read token from cookies
+        
+                        if (clientToken && clientToken === existingSession.token) {
+                            // Same session, allow re-login
+                            // You may update 'createdAt' if you want
+                            await activeUsersColl.updateOne(
+                                { userId: foundUser._id },
+                                { $set: { createdAt: new Date(), token: token } } // update token (new expiration)
+                            );
+                        } else {
+                            // Different session, block login
+                            return res.status(403).json({
+                                success: false,
+                                message: 'You are already logged in on another device. Please logout first.',
+                            });
+                        }
+                    } else {
+                        // No session found, insert new
+                        await activeUsersColl.insertOne({
+                            userId: foundUser._id,
+                            role,
+                            token,
+                            createdAt: new Date(),
+                        });
+                    }
+                }
+        
                 res
                     .cookie('token', token, {
                         httpOnly: true,
                         secure: true,
                         sameSite: 'none',
-                        maxAge: 5 * 60 * 60 * 1000,
                     })
+                    .status(200)
                     .json({
                         success: true,
                         role,
@@ -262,7 +268,6 @@ async function run() {
                             email: foundUser.email,
                             mobileNumber: foundUser.mobileNumber,
                             balance: foundUser.balance,
-                            // Additional fields as needed
                         },
                     });
             } catch (err) {
@@ -270,6 +275,7 @@ async function run() {
                 res.status(500).json({ success: false, message: 'Server error.' });
             }
         });
+        
 
 
         /*
